@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Topological Waveform Synthesizer v2.0</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+
+    <style>
+        body {
+            background-color: #050505;
+            color: #00ff41;
+            font-family: 'Courier New', Courier, monospace;
+            overscroll-behavior: none;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .pointer-auto { pointer-events: auto; }
+        
+        /* Custom UI Elements */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px; width: 16px;
+            border-radius: 50%;
+            background: currentColor;
+            cursor: pointer;
+            margin-top: -6px;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 4px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+        }
+        select, .btn-outline {
+            background: #000;
+            border: 1px solid currentColor;
+            color: currentColor;
+            padding: 4px 8px;
+            font-family: inherit;
+            outline: none;
+            cursor: pointer;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        .btn-outline:hover { background: currentColor; color: #000; }
+        .active-btn { background: currentColor; color: #000; }
+        
+        /* Recording indicator pulse */
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 0, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }
+        }
+        .recording-pulse {
+            background-color: red;
+            color: white;
+            border-color: red;
+            animation: pulse-red 2s infinite;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer" class="p-4">
+        
+        <!-- Header & Top Controls -->
+        <header class="flex justify-between items-start pointer-auto transition-colors duration-500" id="theme-text">
+            <div>
+                <h1 class="text-xl md:text-2xl font-bold tracking-widest uppercase drop-shadow-[0_0_8px_currentColor]">GPU Topological Synth</h1>
+                <p class="text-xs opacity-75">WebGL Shader Displacement & Stereoscopic FFT</p>
+                
+                <!-- Telemetry Readout -->
+                <div class="mt-2 text-[10px] opacity-80 grid grid-cols-2 gap-x-4">
+                    <span id="telemetryFPS">FPS: 60</span>
+                    <span id="telemetryRMS">RMS: 0.00</span>
+                    <span id="telemetryBass">Bass Peak: 0.00</span>
+                    <span id="telemetryCentroid">Spectral Centroid: 0Hz</span>
+                </div>
+            </div>
+            
+            <div class="flex flex-col items-end gap-2">
+                <div id="statusIndicator" class="text-xs font-bold animate-pulse uppercase border border-current px-2 py-1 bg-black/50">System Offline</div>
+                <button id="btnRecord" class="btn-outline">⏺ Capture Media & Data</button>
+            </div>
+        </header>
+
+        <!-- Start Overlay -->
+        <div id="startOverlay" class="absolute inset-0 bg-black/80 flex items-center justify-center pointer-auto backdrop-blur-md z-50">
+            <div class="text-center">
+                <h2 class="text-[#00ff41] text-2xl font-bold tracking-widest mb-6 drop-shadow-[0_0_15px_rgba(0,255,65,0.8)]">INITIALIZE AUDIO ENGINE</h2>
+                <div class="flex gap-4 justify-center">
+                    <button id="btnStartMic" class="bg-transparent border-2 border-[#00ff41] text-[#00ff41] px-6 py-3 text-sm font-bold uppercase tracking-widest hover:bg-[#00ff41] hover:text-black transition-all shadow-[0_0_15px_rgba(0,255,65,0.4)]">
+                        Microphone Input
+                    </button>
+                    <label class="bg-transparent border-2 border-[#00ff41] text-[#00ff41] px-6 py-3 text-sm font-bold uppercase tracking-widest hover:bg-[#00ff41] hover:text-black transition-all shadow-[0_0_15px_rgba(0,255,65,0.4)] cursor-pointer">
+                        Load Audio File
+                        <input type="file" id="audioUpload" accept="audio/*" class="hidden">
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="pointer-auto bg-black/70 backdrop-blur-lg border border-current p-4 flex flex-col gap-4 rounded-xl transition-colors duration-500 max-h-[40vh] overflow-y-auto" id="theme-border">
+            
+            <div class="flex flex-wrap gap-4 justify-between items-center border-b border-current pb-3">
+                <div class="flex gap-2 items-center">
+                    <span class="text-[10px] uppercase opacity-75">Camera:</span>
+                    <button class="btn-outline cam-btn active-btn" data-cam="perspective">Perspective</button>
+                    <button class="btn-outline cam-btn" data-cam="isometric">Isometric</button>
+                    <button class="btn-outline cam-btn" data-cam="topdown">Top-Down</button>
+                </div>
+
+                <div class="flex items-center gap-4">
+                    <div>
+                        <label class="text-[10px] uppercase opacity-75 block mb-1">Fractal Topology</label>
+                        <select id="fractalSelect">
+                            <option value="0">Flat Void</option>
+                            <option value="1">Weierstrass Ripple</option>
+                            <option value="2">Julia Set Morph</option>
+                            <option value="3">Cymatic Interference</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-[10px] uppercase opacity-75 block mb-1">Visual Preset</label>
+                        <select id="presetSelect">
+                            <option value="cyberpunk">Cyberpunk (Neon Green)</option>
+                            <option value="synthwave">Synthwave (Magenta/Cyan)</option>
+                            <option value="abyss">Deep Abyss (Blue/Gold)</option>
+                            <option value="monochrome">Monochrome (White/Black)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div>
+                    <div class="flex justify-between text-[10px] uppercase opacity-75 mb-1">
+                        <span>Terrain Smoothing (GPU)</span>
+                    </div>
+                    <input type="range" id="sliderSmooth" min="0.0" max="1.0" value="0.85" step="0.01">
+                </div>
+                <div>
+                    <div class="flex justify-between text-[10px] uppercase opacity-75 mb-1">
+                        <span>Displacement Amplitude</span>
+                    </div>
+                    <input type="range" id="sliderAmp" min="5" max="50" value="20" step="1">
+                </div>
+                <div>
+                    <div class="flex justify-between text-[10px] uppercase opacity-75 mb-1">
+                        <span>Bloom Intensity</span>
+                    </div>
+                    <input type="range" id="sliderBloom" min="0" max="3" value="1.5" step="0.1">
+                </div>
+            </div>
+            
+            <div class="text-center text-[10px] opacity-50 uppercase tracking-widest mt-1 hidden md:block">
+                Drag on grid to spawn kinetic ripples. Center axis mirrors Stereoscopic L/R spectral data.
+            </div>
+        </div>
+    </div>
+
+    <script id="vertexShader" type="x-shader/x-vertex">
+        uniform sampler2D uAudioTex;
+        uniform float uTime;
+        uniform int uFractalType;
+        uniform float uAmplitude;
+        uniform vec4 uRipples[10]; // xy: position, z: time born, w: strength
+        
+        varying vec2 vUv;
+        varying float vElevation;
+        
+        // Simplex Noise Hash
+        vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
+        float snoise(vec2 v) {
+            const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+            vec2 i  = floor(v + dot(v, C.yy) );
+            vec2 x0 = v -   i + dot(i, C.xx);
+            vec2 i1; i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+            vec4 x12 = x0.xyxy + C.xxzz;
+            x12.xy -= i1;
+            i = mod289(i);
+            vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 )) + i.x + vec3(0.0, i1.x, 1.0 ));
+            vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+            m = m*m ; m = m*m ;
+            vec3 x = 2.0 * fract(p * C.www) - 1.0;
+            vec3 h = abs(x) - 0.5;
+            vec3 ox = floor(x + 0.5);
+            vec3 a0 = x - ox;
+            m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+            vec3 g;
+            g.x  = a0.x  * x0.x  + h.x  * x0.y;
+            g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+            return 130.0 * dot(m, g);
+        }
+
+        void main() {
+            vUv = uv;
+            
+            // 1. Audio Displacement (Sample DataTexture)
+            float audioVal = texture2D(uAudioTex, uv).r;
+            
+            // 2. Base Topological Fractaling
+            float fractalHeight = 0.0;
+            vec2 cUv = uv * 2.0 - 1.0; // centered -1 to 1
+            
+            if (uFractalType == 1) {
+                // Weierstrass-style ripple
+                float dist = length(cUv);
+                for(float i=1.0; i<4.0; i++) {
+                    fractalHeight += sin(dist * 20.0 * i - uTime * 2.0) * (0.5 / i);
+                }
+                fractalHeight *= 2.0;
+            } 
+            else if (uFractalType == 2) {
+                // Julia morph proxy (using noise to simulate complex bounds)
+                fractalHeight = snoise(cUv * 3.0 + vec2(sin(uTime*0.2), cos(uTime*0.3))) * 3.0;
+                fractalHeight += snoise(cUv * 8.0 - uTime*0.5) * 1.0;
+            }
+            else if (uFractalType == 3) {
+                // Cymatic interference
+                float a = sin(cUv.x * 15.0 + uTime) * cos(cUv.y * 15.0 - uTime);
+                float b = sin(length(cUv) * 20.0 - uTime * 3.0);
+                fractalHeight = (a + b) * 1.5;
+            }
+
+            // 3. Kinetic Interaction Ripples (Raycasted)
+            float rippleHeight = 0.0;
+            for(int i=0; i<10; i++) {
+                if(uRipples[i].w > 0.0) {
+                    float dist = distance(uv, uRipples[i].xy);
+                    float age = uTime - uRipples[i].z;
+                    if(age > 0.0 && dist < age * 0.8) {
+                        // Damped sine wave
+                        rippleHeight += sin((dist - age * 0.5) * 50.0) * exp(-dist * 15.0 - age * 2.0) * uRipples[i].w;
+                    }
+                }
+            }
+
+            // Calculate total displacement
+            float totalHeight = (audioVal * uAmplitude) + fractalHeight + (rippleHeight * 10.0);
+            vElevation = totalHeight;
+
+            // Apply displacement along the normal (Z since plane is rotated)
+            vec3 newPosition = position + normal * totalHeight;
+            
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+        }
+    </script>
+
+    <script id="fragmentShader" type="x-shader/x-fragment">
+        uniform vec3 uColorBase;
+        uniform vec3 uColorPeak;
+        uniform float uBassIntensity;
+        uniform float uAmplitude;
+        
+        varying vec2 vUv;
+        varying float vElevation;
+
+        void main() {
+            // Normalize elevation for color mixing
+            float h = clamp(vElevation / (uAmplitude * 0.8), 0.0, 1.0);
+            
+            // Generate Grid lines (Procedural Wireframe)
+            vec2 grid = abs(fract(vUv * 128.0 - 0.5) - 0.5);
+            float lineThickness = 0.05;
+            float lineX = smoothstep(lineThickness, lineThickness * 0.5, grid.x);
+            float lineY = smoothstep(lineThickness, lineThickness * 0.5, grid.y);
+            float isLine = max(lineX, lineY);
+
+            // Base gradient
+            vec3 color = mix(uColorBase, uColorPeak, h);
+
+            // Chromatic Dispersion on Bass Peaks (simulate in shader by splitting RGB thresholds)
+            float chromOffset = uBassIntensity * 0.5 * h;
+            vec3 finalColor = vec3(
+                mix(uColorBase.r, uColorPeak.r, clamp(h + chromOffset, 0.0, 1.0)),
+                color.g,
+                mix(uColorBase.b, uColorPeak.b, clamp(h - chromOffset, 0.0, 1.0))
+            );
+
+            // Highlight lines, darken voids
+            finalColor *= (isLine * 0.8 + 0.2);
+            
+            // Overdrive bright peaks for UnrealBloomPass extraction
+            finalColor += finalColor * h * uBassIntensity;
+
+            // Alpha fading at the edges of the plane
+            float edgeFade = smoothstep(0.0, 0.1, vUv.x) * smoothstep(1.0, 0.9, vUv.x) * 
+                             smoothstep(0.0, 0.1, vUv.y) * smoothstep(1.0, 0.9, vUv.y);
+
+            gl_FragColor = vec4(finalColor, isLine * edgeFade * 0.9 + 0.1);
+        }
+    </script>
+
+    <script>
+        // --- 1. Global State & Config ---
+        const config = {
+            gridRes: 256,         // 256x256 = 65,536 vertices. Fast on WebGL.
+            textureSize: 256 * 256,
+            cameraLerpSpeed: 0.05
+        };
+        
+        let state = {
+            isEngineRunning: false,
+            isRecording: false,
+            audioSourceType: null, // 'mic' or 'file'
+            smoothing: 0.85,
+            telemetry: [],         // Array to hold JSON data
+            recordedChunks: []     // Array to hold WebM video chunks
+        };
+
+        const presets = {
+            cyberpunk: { bg: 0x050505, base: new THREE.Color(0x002200), peak: new THREE.Color(0x00ff41), text: '#00ff41' },
+            synthwave: { bg: 0x1a0524, base: new THREE.Color(0x220044), peak: new THREE.Color(0xff00ff), text: '#00ffff' },
+            abyss:     { bg: 0x020510, base: new THREE.Color(0x001133), peak: new THREE.Color(0xffb700), text: '#ffb700' },
+            monochrome:{ bg: 0x000000, base: new THREE.Color(0x222222), peak: new THREE.Color(0xffffff), text: '#ffffff' }
+        };
+
+        // UI Elements
+        const ui = {
+            themeText: document.getElementById('theme-text'),
+            themeBorder: document.getElementById('theme-border'),
+            status: document.getElementById('statusIndicator'),
+            startOverlay: document.getElementById('startOverlay'),
+            btnStartMic: document.getElementById('btnStartMic'),
+            audioUpload: document.getElementById('audioUpload'),
+            btnRecord: document.getElementById('btnRecord'),
+            camBtns: document.querySelectorAll('.cam-btn'),
+            fractalSelect: document.getElementById('fractalSelect'),
+            presetSelect: document.getElementById('presetSelect'),
+            sliderSmooth: document.getElementById('sliderSmooth'),
+            sliderAmp: document.getElementById('sliderAmp'),
+            sliderBloom: document.getElementById('sliderBloom'),
+            telFPS: document.getElementById('telemetryFPS'),
+            telRMS: document.getElementById('telemetryRMS'),
+            telBass: document.getElementById('telemetryBass'),
+            telCentroid: document.getElementById('telemetryCentroid')
+        };
+
+        // --- 2. WebGL & Post-Processing Setup ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(presets.cyberpunk.bg);
+        scene.fog = new THREE.FogExp2(presets.cyberpunk.bg, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        // Camera Targeting System
+        const camTargets = {
+            perspective: { pos: new THREE.Vector3(0, 15, 60), look: new THREE.Vector3(0, 0, 0) },
+            isometric:   { pos: new THREE.Vector3(45, 45, 45), look: new THREE.Vector3(0, 0, 0) },
+            topdown:     { pos: new THREE.Vector3(0, 80, 0), look: new THREE.Vector3(0, 0, 0) }
+        };
+        let targetCamPos = camTargets.perspective.pos.clone();
+        camera.position.copy(targetCamPos);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" }); // AA disabled for Bloom optimization
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Post-Processing Chain
+        const renderScene = new THREE.RenderPass(scene, camera);
+        const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        const composer = new THREE.EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // --- 3. GPU DataTexture & Shader Material ---
+        // A 256x256 texture holds our FFT history. First row is current frame, subsequent rows are history.
+        const audioTextureData = new Uint8Array(config.textureSize);
+        const audioTexture = new THREE.DataTexture(audioTextureData, config.gridRes, config.gridRes, THREE.LuminanceFormat, THREE.UnsignedByteType);
+        audioTexture.needsUpdate = true;
+
+        const uniforms = {
+            uAudioTex: { value: audioTexture },
+            uTime: { value: 0.0 },
+            uFractalType: { value: 0 },
+            uAmplitude: { value: 20.0 },
+            uBassIntensity: { value: 0.0 },
+            uColorBase: { value: presets.cyberpunk.base },
+            uColorPeak: { value: presets.cyberpunk.peak },
+            uRipples: { value: Array(10).fill().map(() => new THREE.Vector4(0, 0, 0, 0)) }
+        };
+
+        const geometry = new THREE.PlaneGeometry(100, 100, config.gridRes - 1, config.gridRes - 1);
+        geometry.rotateX(-Math.PI / 2);
+
+        const material = new THREE.ShaderMaterial({
+            vertexShader: document.getElementById('vertexShader').textContent,
+            fragmentShader: document.getElementById('fragmentShader').textContent,
+            uniforms: uniforms,
+            transparent: true,
+            side: THREE.DoubleSide
+        });
+
+        const terrainMesh = new THREE.Mesh(geometry, material);
+        scene.add(terrainMesh);
+
+        // Raycasting Interactivity (Kinetic Ripples)
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        const invisiblePlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        let rippleIndex = 0;
+
+        function spawnRipple(e) {
+            if (!state.isEngineRunning) return;
+            let clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            let clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+            mouse.x = (clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const target = new THREE.Vector3();
+            raycaster.ray.intersectPlane(invisiblePlane, target);
+
+            if (target) {
+                // Map world space (-50 to 50) to UV space (0 to 1)
+                const u = (target.x + 50) / 100;
+                const v = 1.0 - ((target.z + 50) / 100);
+                
+                // Set ripple uniform: x, y, spawn time, strength
+                uniforms.uRipples.value[rippleIndex].set(u, v, uniforms.uTime.value, 1.0);
+                rippleIndex = (rippleIndex + 1) % 10;
+            }
+        }
+
+        renderer.domElement.addEventListener('pointerdown', spawnRipple);
+        renderer.domElement.addEventListener('pointermove', (e) => { if(e.buttons > 0) spawnRipple(e); });
+
+        // --- 4. Stereoscopic Audio Pipeline ---
+        let audioContext, analyserL, analyserR, sourceNode;
+        const dataL = new Uint8Array(128);
+        const dataR = new Uint8Array(128);
+
+        async function initAudio(type, file = null) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const splitter = audioContext.createChannelSplitter(2);
+            
+            analyserL = audioContext.createAnalyser();
+            analyserR = audioContext.createAnalyser();
+            // 256 FFT size gives us 128 bins per channel. Left + Right = 256 total mapped across the grid width.
+            analyserL.fftSize = 256; 
+            analyserR.fftSize = 256;
+
+            splitter.connect(analyserL, 0); // Connect left channel
+            splitter.connect(analyserR, 1); // Connect right channel
+
+            try {
+                if (type === 'mic') {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    sourceNode = audioContext.createMediaStreamSource(stream);
+                    sourceNode.connect(splitter);
+                    state.audioSourceType = 'mic';
+                    ui.status.innerText = "Live Mic Active";
+                } else if (type === 'file' && file) {
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        const arrayBuffer = e.target.result;
+                        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                        sourceNode = audioContext.createBufferSource();
+                        sourceNode.buffer = audioBuffer;
+                        sourceNode.connect(splitter);
+                        sourceNode.connect(audioContext.destination); // Play out loud
+                        sourceNode.start(0);
+                        sourceNode.loop = true;
+                    };
+                    reader.readAsArrayBuffer(file);
+                    state.audioSourceType = 'file';
+                    ui.status.innerText = "File Playback Active";
+                }
+
+                state.isEngineRunning = true;
+                ui.startOverlay.style.display = 'none';
+                clock.start();
+                animate();
+
+            } catch (err) {
+                console.error("Audio Init Error:", err);
+                alert("Failed to initialize audio source. Check microphone permissions.");
+            }
+        }
+
+        // --- 5. MediaRecorder & Telemetry Export ---
+        let mediaRecorder;
+        
+        function toggleRecording() {
+            if (!state.isEngineRunning) return;
+
+            if (!state.isRecording) {
+                state.recordedChunks = [];
+                state.telemetry = [];
+                
+                // 1. Setup Video Capture from Canvas
+                const stream = renderer.domElement.captureStream(60); // 60 FPS target
+                const options = { mimeType: 'video/webm; codecs=vp9' };
+                try {
+                    mediaRecorder = new MediaRecorder(stream, options);
+                } catch(e) {
+                    mediaRecorder = new MediaRecorder(stream); // fallback
+                }
+
+                mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) state.recordedChunks.push(e.data); };
+                mediaRecorder.onstop = exportArtifacts;
+                mediaRecorder.start(100); // collect 100ms chunks
+
+                // 2. Update UI
+                state.isRecording = true;
+                ui.btnRecord.innerText = "⏹ Stop Recording";
+                ui.btnRecord.classList.add('recording-pulse');
+            } else {
+                state.isRecording = false;
+                mediaRecorder.stop();
+                ui.btnRecord.innerText = "⏺ Capture Media & Data";
+                ui.btnRecord.classList.remove('recording-pulse');
+            }
+        }
+
+        function exportArtifacts() {
+            // Export Video
+            const videoBlob = new Blob(state.recordedChunks, { type: 'video/webm' });
+            const videoUrl = URL.createObjectURL(videoBlob);
+            const aVideo = document.createElement('a');
+            aVideo.style.display = 'none';
+            aVideo.href = videoUrl;
+            aVideo.download = `TopoSynth_Capture_${Date.now()}.webm`;
+            document.body.appendChild(aVideo);
+            aVideo.click();
+
+            // Export Telemetry JSON
+            const jsonStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state.telemetry, null, 2));
+            const aJson = document.createElement('a');
+            aJson.href = jsonStr;
+            aJson.download = `TopoSynth_Telemetry_${Date.now()}.json`;
+            document.body.appendChild(aJson);
+            aJson.click();
+
+            setTimeout(() => { document.body.removeChild(aVideo); document.body.removeChild(aJson); }, 100);
+        }
+
+        // --- 6. Event Listeners ---
+        ui.btnStartMic.addEventListener('click', () => initAudio('mic'));
+        ui.audioUpload.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) initAudio('file', e.target.files[0]);
+        });
+        ui.btnRecord.addEventListener('click', toggleRecording);
+
+        ui.camBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                ui.camBtns.forEach(b => b.classList.remove('active-btn'));
+                e.target.classList.add('active-btn');
+                targetCamPos = camTargets[e.target.dataset.cam].pos.clone();
+            });
+        });
+
+        ui.sliderSmooth.addEventListener('input', (e) => state.smoothing = parseFloat(e.target.value));
+        ui.sliderAmp.addEventListener('input', (e) => uniforms.uAmplitude.value = parseFloat(e.target.value));
+        ui.sliderBloom.addEventListener('input', (e) => bloomPass.strength = parseFloat(e.target.value));
+        ui.fractalSelect.addEventListener('change', (e) => uniforms.uFractalType.value = parseInt(e.target.value));
+        
+        ui.presetSelect.addEventListener('change', (e) => {
+            const p = presets[e.target.value];
+            scene.background.setHex(p.bg);
+            scene.fog.color.setHex(p.bg);
+            uniforms.uColorBase.value = p.base;
+            uniforms.uColorPeak.value = p.peak;
+            document.body.style.color = p.text;
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- 7. Core Render Loop ---
+        const clock = new THREE.Clock();
+        let frameCounter = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const dt = clock.getDelta();
+            const time = clock.getElapsedTime();
+            uniforms.uTime.value = time;
+
+            // Smooth Camera Interpolation
+            camera.position.lerp(targetCamPos, config.cameraLerpSpeed);
+            camera.lookAt(camTargets.perspective.look); // Always look at center
+
+            if (state.isEngineRunning) {
+                // 1. Shift DataTexture rows backward (Y-axis scrolling)
+                // Using TypedArray.copyWithin is exceptionally fast. Shift entire array by one row (256 bytes).
+                audioTextureData.copyWithin(config.gridRes, 0, config.textureSize - config.gridRes);
+
+                // 2. Fetch Stereoscopic FFT Data
+                analyserL.getByteFrequencyData(dataL);
+                analyserR.getByteFrequencyData(dataR);
+
+                let sumL = 0, sumR = 0, centroidNumerator = 0, centroidDenominator = 0;
+                let bassPeak = 0;
+
+                // 3. Map Data to Front Row (Index 0 to 255) & Calculate Telemetry
+                // Map Left channel (0-127) reversed so bass is in the center
+                for (let i = 0; i < 128; i++) {
+                    // Apply temporal smoothing to input data
+                    let val = dataL[127 - i];
+                    let smoothedVal = val * (1 - state.smoothing) + (audioTextureData[i] * state.smoothing);
+                    audioTextureData[i] = smoothedVal;
+                    
+                    sumL += smoothedVal * smoothedVal;
+                    centroidNumerator += smoothedVal * (127 - i);
+                    centroidDenominator += smoothedVal;
+                    if (i > 100 && smoothedVal > bassPeak) bassPeak = smoothedVal; // Low bins are high index here
+                }
+                // Map Right channel (128-255)
+                for (let i = 0; i < 128; i++) {
+                    let val = dataR[i];
+                    let smoothedVal = val * (1 - state.smoothing) + (audioTextureData[128 + i] * state.smoothing);
+                    audioTextureData[128 + i] = smoothedVal;
+                    
+                    sumR += smoothedVal * smoothedVal;
+                    centroidNumerator += smoothedVal * i;
+                    centroidDenominator += smoothedVal;
+                    if (i < 20 && smoothedVal > bassPeak) bassPeak = smoothedVal; // Low bins are low index here
+                }
+
+                // Push buffer to GPU
+                audioTexture.needsUpdate = true;
+
+                // 4. Uniform & Post-Processing Modulation
+                let normalizedBass = bassPeak / 255.0;
+                uniforms.uBassIntensity.value = normalizedBass;
+                // Minor bloom pulse on heavy bass
+                bloomPass.radius = 0.4 + (normalizedBass * 0.4); 
+
+                // 5. Telemetry Calculation & UI Update
+                if (frameCounter % 5 === 0) {
+                    let rmsL = Math.sqrt(sumL / 128) / 255.0;
+                    let rmsR = Math.sqrt(sumR / 128) / 255.0;
+                    let rmsTotal = (rmsL + rmsR) / 2.0;
+                    let centroid = centroidDenominator === 0 ? 0 : centroidNumerator / centroidDenominator;
+                    let hzCentroid = (centroid / 128.0) * (audioContext.sampleRate / 2); // Approximate Hz
+
+                    ui.telFPS.innerText = `FPS: ${Math.round(1 / dt)}`;
+                    ui.telRMS.innerText = `RMS: ${rmsTotal.toFixed(3)}`;
+                    ui.telBass.innerText = `Bass: ${(normalizedBass * 100).toFixed(0)}%`;
+                    ui.telCentroid.innerText = `Centroid: ${Math.round(hzCentroid)}Hz`;
+
+                    if (state.isRecording) {
+                        state.telemetry.push({
+                            time: time.toFixed(3),
+                            rms: rmsTotal.toFixed(4),
+                            bassIntensity: normalizedBass.toFixed(4),
+                            spectralCentroid: Math.round(hzCentroid)
+                        });
+                    }
+                }
+            }
+
+            controls.update();
+            composer.render();
+            frameCounter++;
+        }
+    </script>
+</body>
+</html>
